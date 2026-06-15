@@ -41,6 +41,13 @@ def validate_required_columns(df: pd.DataFrame, required: list[str]) -> None:
         raise ValueError(f"Folgende Spalten fehlen in der Datei: {', '.join(missing)}")
 
 
+def normalize_year_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize alternative year column names to a unified column name."""
+    if "Jahr von Date" in df.columns and "Jahr" not in df.columns:
+        df = df.rename(columns={"Jahr von Date": "Jahr"})
+    return df
+
+
 def parse_int_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").astype("Int64")
 
@@ -70,6 +77,7 @@ def fmt_percent_no_decimal(x) -> str:
 
 def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float) -> pd.DataFrame:
     df = normalize_columns(df)
+    df = normalize_year_column(df)
     required_columns = ["Jahr", "KW", "tDM Customer ohne SC", "0"]
     validate_required_columns(df, required_columns)
 
@@ -270,6 +278,7 @@ def main() -> None:
 
     # Prepare raw data for the selected customer (use original uploaded data)
     raw = normalize_columns(data)
+    raw = normalize_year_column(raw)
     # Ensure necessary columns and parse types
     if not {"Jahr", "KW", "tDM Customer ohne SC", "0"}.issubset(set(raw.columns)):
         st.error("Rohdaten enthalten nicht die benötigten Spalten für das Diagramm.")
