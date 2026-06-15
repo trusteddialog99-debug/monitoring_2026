@@ -108,13 +108,15 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
         for encoding in encodings:
             for sep, decimal in separators:
                 try:
-                    df = pd.read_csv(
-                        io.BytesIO(raw),
+                    read_kwargs = dict(
                         sep=sep,
                         decimal=decimal,
                         engine="python",
                         encoding=encoding,
                     )
+                    if decimal == ",":
+                        read_kwargs["thousands"] = "."
+                    df = pd.read_csv(io.BytesIO(raw), **read_kwargs)
                     if df.shape[1] > 1:
                         return df
                 except Exception as exc:
@@ -130,7 +132,10 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
                 continue
             for sep, decimal in separators:
                 try:
-                    df = pd.read_csv(io.StringIO(decoded), sep=sep, decimal=decimal, engine="python")
+                    read_kwargs = dict(sep=sep, decimal=decimal, engine="python")
+                    if decimal == ",":
+                        read_kwargs["thousands"] = "."
+                    df = pd.read_csv(io.StringIO(decoded), **read_kwargs)
                     if df.shape[1] > 1:
                         return df
                 except Exception:
