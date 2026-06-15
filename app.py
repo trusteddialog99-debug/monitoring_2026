@@ -56,14 +56,13 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
 
-        encodings = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
+        encodings = ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin1"]
         separators = [(";", ","), (",", ".")]
         last_exc = None
 
         for encoding in encodings:
             for sep, decimal in separators:
                 try:
-                    uploaded_file.seek(0)
                     df = pd.read_csv(
                         io.BytesIO(raw),
                         sep=sep,
@@ -78,8 +77,7 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
 
         # last resort: try without specifying encoding/separator
         try:
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file)
+            return pd.read_csv(io.BytesIO(raw), engine="python")
         except Exception:
             raise last_exc if last_exc is not None else ValueError("Fehler beim Einlesen der CSV-Datei.")
 
