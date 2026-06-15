@@ -48,6 +48,25 @@ def normalize_year_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def read_input_data(uploaded_file) -> pd.DataFrame:
+    """Read uploaded Excel or CSV data into a DataFrame."""
+    filename = getattr(uploaded_file, "name", "").lower()
+    if filename.endswith(".csv"):
+        # Prefer German CSV format with semicolon separator and comma decimal.
+        try:
+            df = pd.read_csv(uploaded_file, sep=";", decimal=",", engine="python")
+            if df.shape[1] == 1:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, sep=",", decimal=".", engine="python")
+        except Exception:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, sep=",", decimal=".", engine="python")
+        return df
+
+    uploaded_file.seek(0)
+    return pd.read_excel(uploaded_file, engine="openpyxl")
+
+
 def parse_int_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").astype("Int64")
 
@@ -201,18 +220,18 @@ def main() -> None:
             help="Zeige nur Kunden mit mindestens diesem aktuellen trustedDialog-Volumen oder solchen mit 0.",
         )
         st.markdown(
-            "Lade eine Excel-Datei hoch, die die Spalten `Jahr`, `KW`, `tDM Customer ohne SC` und `0` enthält."
+            "Lade eine Excel- oder CSV-Datei hoch, die die Spalten `Jahr`, `KW`, `tDM Customer ohne SC` und `0` enthält."
         )
 
-    uploaded_file = st.file_uploader("Excel-Datei hochladen", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("Datei hochladen", type=["xlsx", "xls", "csv"])
     if uploaded_file is None:
         st.info("Bitte laden Sie eine Excel-Datei hoch, um das Monitoring zu starten.")
         return
 
     try:
-        data = pd.read_excel(uploaded_file, engine="openpyxl")
+        data = read_input_data(uploaded_file)
     except Exception as exc:
-        st.error(f"Fehler beim Laden der Excel-Datei: {exc}")
+        st.error(f"Fehler beim Laden der Datei: {exc}")
         return
 
     try:
