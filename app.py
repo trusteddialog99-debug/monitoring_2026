@@ -1,9 +1,11 @@
 import datetime
 from typing import Optional
+import io
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 
 
 def safe_pct_change(current: float, baseline: float) -> Optional[float]:
@@ -45,6 +47,25 @@ def parse_int_series(series: pd.Series) -> pd.Series:
 
 def parse_float_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").astype(float)
+def fmt_thousands_point(x) -> str:
+    """Format number with German thousands separator (.) and no decimals."""
+    if pd.isna(x):
+        return "N/A"
+    try:
+        return f"{x:,.0f}".replace(",", ".")
+    except Exception:
+        return str(x)
+
+
+def fmt_percent_no_decimal(x) -> str:
+    """Format percent without decimal places and with comma as decimal separator if needed."""
+    if pd.isna(x):
+        return "N/A"
+    try:
+        s = f"{x:.0f}%"
+        return s.replace(".", ",")
+    except Exception:
+        return str(x)
 
 
 def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float) -> pd.DataFrame:
@@ -200,12 +221,110 @@ def main() -> None:
     average_drop = result_df["% Veränderung (Hauptvergleich)"].replace([np.inf, -np.inf], np.nan).dropna().mean()
 
     col1, col2 = st.columns(2)
-    col1.metric("Auffällige Kunden", number_of_customers)
-    col2.metric("Durchschnittlicher Drop (%)", f"{average_drop:.1f}%" if pd.notna(average_drop) else "N/A")
+    col1.metric("Auffällige Kunden", fmt_thousands_point(number_of_customers))
+    col2.metric(
+        "Durchschnittlicher Drop (%)",
+        fmt_percent_no_decimal(average_drop) if pd.notna(average_drop) else "N/A",
+    )
 
-    styled = result_df.style.apply(lambda row: style_drop(row, threshold), axis=1)
+    styled = (
+        result_df.style
+        .apply(lambda row: style_drop(row, threshold), axis=1)
+        .format(
+            {
+                "Aktuelle Woche (0)": fmt_thousands_point,
+                "Vorwoche": fmt_thousands_point,
+                "Vor-Vorwoche": fmt_thousands_point,
+                "Durchschnitt 4 Wochen": fmt_thousands_point,
+                "Durchschnitt 8 Wochen": fmt_thousands_point,
+                "% Veränderung vs Vorwoche": fmt_percent_no_decimal,
+                "% Veränderung vs Ø 4 Wochen": fmt_percent_no_decimal,
+                "% Veränderung vs Ø 8 Wochen": fmt_percent_no_decimal,
+                "% Veränderung (Hauptvergleich)": fmt_percent_no_decimal,
+            },
+            na_rep="N/A",
+        )
+    )
 
     st.dataframe(styled, use_container_width=True)
+
+    # Selection: search box + filtered customer picker
+    customers = result_df["tDM Customer ohne SC"].tolist()
+    if "selected_customer" not in st.session_state:
+        st.session_state.selected_customer = customers[0] if customers else None
+
+    search_term = st.text_input("Kunde suchen", value="", help="Teil des Kundennamens eingeben, um die Auswahl einzuschränken.")
+    filtered_customers = [c for c in customers if search_term.lower() in c.lower()] if search_term else customers
+    if not filtered_customers:
+        st.warning("Kein Kunde passt zur Suche. Bitte Suchbegriff anpassen.")
+        filtered_customers = customers
+
+    default_index = 0
+    if st.session_state.selected_customer in filtered_customers:
+        default_index = filtered_customers.index(st.session_state.selected_customer)
+
+    selected = st.selectbox("Kunde auswählen für Historie", filtered_customers, index=default_index)
+    st.session_state.selected_customer = selected
+
+    st.subheader(f"Historisches Mailvolumen für: {selected}")
+
+    # Prepare raw data for the selected customer (use original uploaded data)
+    raw = normalize_columns(data)
+    # Ensure necessary columns and parse types
+    if not {"Jahr", "KW", "tDM Customer ohne SC", "0"}.issubset(set(raw.columns)):
+        st.error("Rohdaten enthalten nicht die benötigten Spalten für das Diagramm.")
+    else:
+        raw["Jahr"] = parse_int_series(raw["Jahr"]).astype(int)
+        raw["KW"] = parse_int_series(raw["KW"]).astype(int)
+        raw["tDM Customer ohne SC"] = raw["tDM Customer ohne SC"].astype(str).str.strip()
+        raw["volume_0"] = parse_float_series(raw["0"]).fillna(np.nan)
+
+        df_cust = raw[raw["tDM Customer ohne SC"] == selected].copy()
+        if df_cust.empty:
+            st.info("Für den ausgewählten Kunden sind keine historischen Daten vorhanden.")
+        else:
+            agg = df_cust.groupby(["Jahr", "KW"], as_index=False)["volume_0"].sum()
+            years = sorted(agg["Jahr"].unique())
+            # Build full grid of Year x KW (1..53) to show gaps
+            full = pd.MultiIndex.from_product([years, list(range(1, 54))], names=["Jahr", "KW"]).to_frame(index=False)
+            full = full.merge(agg, on=["Jahr", "KW"], how="left")
+
+            # Plot: one line per year, KW on x-axis
+            fig = px.line(
+                full,
+                x="KW",
+                y="volume_0",
+                color="Jahr",
+                labels={"KW": "Kalenderwoche (KW)", "volume_0": "Mailvolumen (Spalte 0)", "Jahr": "Jahr"},
+                markers=False,
+            )
+            fig.update_traces(connectgaps=False)
+            fig.update_layout(hovermode="x unified", legend_title_text="Jahr")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Export: CSV (German format) and Excel
+    csv_str = result_df.to_csv(sep=';', decimal=',', index=False, float_format='%.0f')
+    csv_bytes = csv_str.encode('utf-8-sig')
+
+    towrite = io.BytesIO()
+    with pd.ExcelWriter(towrite, engine='openpyxl') as writer:
+        result_df.to_excel(writer, index=False, sheet_name='Monitoring')
+    towrite.seek(0)
+
+    col_csv, col_xlsx = st.columns(2)
+    col_csv.download_button(
+        label="Download CSV (DE, ; sep, , decimal)",
+        data=csv_bytes,
+        file_name=f"monitoring_{datetime.date.today().isoformat()}.csv",
+        mime="text/csv",
+    )
+
+    col_xlsx.download_button(
+        label="Download Excel (.xlsx)",
+        data=towrite.getvalue(),
+        file_name=f"monitoring_{datetime.date.today().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     st.markdown(
         """
