@@ -48,6 +48,51 @@ def normalize_year_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def map_column_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    """Map common alternative column names to the expected canonical names.
+
+    This handles variations like 'Jahr von Date', 'Kalenderwoche', 'kunde', etc.
+    """
+    import re
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+    cols = list(df.columns)
+    norm_map = {norm(c): c for c in cols}
+
+    col_map = {}
+
+    # Jahr aliases
+    for a in ["jahrvondate", "jahr", "year"]:
+        if a in norm_map and "Jahr" not in df.columns:
+            col_map[norm_map[a]] = "Jahr"
+            break
+
+    # KW aliases
+    for a in ["kw", "kalenderwoche", "kwvondate"]:
+        if a in norm_map and "KW" not in df.columns:
+            col_map[norm_map[a]] = "KW"
+            break
+
+    # Customer aliases
+    for a in ["tdmcustomerohnesc", "tdmcustomer", "customer", "kunde", "t_d_m_customer_ohne_sc"]:
+        if a in norm_map and "tDM Customer ohne SC" not in df.columns:
+            col_map[norm_map[a]] = "tDM Customer ohne SC"
+            break
+
+    # Column '0' may be literal '0' or similar
+    if "0" not in df.columns:
+        for c in cols:
+            if norm(c) == "0":
+                col_map[c] = "0"
+                break
+
+    if col_map:
+        df = df.rename(columns=col_map)
+    return df
+
+
 def read_input_data(uploaded_file) -> pd.DataFrame:
     """Read uploaded Excel or CSV data into a DataFrame."""
     filename = getattr(uploaded_file, "name", "").lower()
@@ -57,7 +102,7 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
             raw = raw.encode("utf-8")
 
         encodings = ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin1"]
-        separators = [(";", ","), (",", ".")]
+        separators = [(";", ","), (",", "."), ("\t", ",")]
         last_exc = None
 
         for encoding in encodings:
@@ -133,6 +178,7 @@ def fmt_percent_no_decimal(x) -> str:
 def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float) -> pd.DataFrame:
     df = normalize_columns(df)
     df = normalize_year_column(df)
+    df = map_column_aliases(df)
     required_columns = ["Jahr", "KW", "tDM Customer ohne SC", "0"]
     validate_required_columns(df, required_columns)
 
@@ -334,6 +380,7 @@ def main() -> None:
     # Prepare raw data for the selected customer (use original uploaded data)
     raw = normalize_columns(data)
     raw = normalize_year_column(raw)
+    raw = map_column_aliases(raw)
     # Ensure necessary columns and parse types
     if not {"Jahr", "KW", "tDM Customer ohne SC", "0"}.issubset(set(raw.columns)):
         st.error("Rohdaten enthalten nicht die benötigten Spalten für das Diagramm.")
