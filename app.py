@@ -75,11 +75,29 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
                 except Exception as exc:
                     last_exc = exc
 
-        # last resort: try without specifying encoding/separator
-        try:
-            return pd.read_csv(io.BytesIO(raw), engine="python")
-        except Exception:
-            raise last_exc if last_exc is not None else ValueError("Fehler beim Einlesen der CSV-Datei.")
+        # Fallback: decode bytes with errors='replace' and try reading via StringIO
+        for enc in encodings:
+            try:
+                decoded = raw.decode(enc, errors="replace")
+            except Exception:
+                decoded = None
+            if decoded is None:
+                continue
+            for sep, decimal in separators:
+                try:
+                    df = pd.read_csv(io.StringIO(decoded), sep=sep, decimal=decimal, engine="python")
+                    if df.shape[1] > 1:
+                        return df
+                except Exception:
+                    continue
+            try:
+                df = pd.read_csv(io.StringIO(decoded), engine="python")
+                return df
+            except Exception:
+                continue
+
+        # If all attempts fail, re-raise last exception for visibility
+        raise last_exc if last_exc is not None else ValueError("Fehler beim Einlesen der CSV-Datei.")
 
     uploaded_file.seek(0)
     return pd.read_excel(uploaded_file, engine="openpyxl")
