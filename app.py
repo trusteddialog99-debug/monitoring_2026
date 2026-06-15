@@ -52,16 +52,36 @@ def read_input_data(uploaded_file) -> pd.DataFrame:
     """Read uploaded Excel or CSV data into a DataFrame."""
     filename = getattr(uploaded_file, "name", "").lower()
     if filename.endswith(".csv"):
-        # Prefer German CSV format with semicolon separator and comma decimal.
+        raw = uploaded_file.read()
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+
+        encodings = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
+        separators = [(";", ","), (",", ".")]
+        last_exc = None
+
+        for encoding in encodings:
+            for sep, decimal in separators:
+                try:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(
+                        io.BytesIO(raw),
+                        sep=sep,
+                        decimal=decimal,
+                        engine="python",
+                        encoding=encoding,
+                    )
+                    if df.shape[1] > 1:
+                        return df
+                except Exception as exc:
+                    last_exc = exc
+
+        # last resort: try without specifying encoding/separator
         try:
-            df = pd.read_csv(uploaded_file, sep=";", decimal=",", engine="python")
-            if df.shape[1] == 1:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=",", decimal=".", engine="python")
-        except Exception:
             uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, sep=",", decimal=".", engine="python")
-        return df
+            return pd.read_csv(uploaded_file)
+        except Exception:
+            raise last_exc if last_exc is not None else ValueError("Fehler beim Einlesen der CSV-Datei.")
 
     uploaded_file.seek(0)
     return pd.read_excel(uploaded_file, engine="openpyxl")
