@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 
 
 def safe_pct_change(current: float, baseline: float) -> Optional[float]:
@@ -17,6 +18,13 @@ def safe_pct_change(current: float, baseline: float) -> Optional[float]:
             return 0.0
         return np.sign(current) * np.inf
     return (current - baseline) / baseline * 100
+
+
+def safe_gap_percent(total: float, signed: float) -> Optional[float]:
+    """Calculate percent gap between Gesamt and signed volume 0."""
+    if pd.isna(total) or pd.isna(signed) or total == 0:
+        return np.nan
+    return (total - signed) / total * 100
 
 
 def get_previous_iso_week(year: int, week: int) -> tuple[int, int]:
@@ -79,6 +87,12 @@ def map_column_aliases(df: pd.DataFrame) -> pd.DataFrame:
     for a in ["tdmcustomerohnesc", "tdmcustomer", "customer", "kunde", "t_d_m_customer_ohne_sc"]:
         if a in norm_map and "tDM Customer ohne SC" not in df.columns:
             col_map[norm_map[a]] = "tDM Customer ohne SC"
+            break
+
+    # Gesamt aliases
+    for a in ["gesamt", "total", "summe", "alle", "gesamtsumme"]:
+        if a in norm_map and "Gesamt" not in df.columns:
+            col_map[norm_map[a]] = "Gesamt"
             break
 
     # Column '0' may be literal '0' or similar
@@ -184,15 +198,16 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
     df = normalize_columns(df)
     df = normalize_year_column(df)
     df = map_column_aliases(df)
-    required_columns = ["Jahr", "KW", "tDM Customer ohne SC", "0"]
+    required_columns = ["Jahr", "KW", "tDM Customer ohne SC", "0", "Gesamt"]
     validate_required_columns(df, required_columns)
 
     df["Jahr"] = parse_int_series(df["Jahr"]).astype(int)
     df["KW"] = parse_int_series(df["KW"]).astype(int)
     df["tDM Customer ohne SC"] = df["tDM Customer ohne SC"].astype(str).str.strip()
     df["volume_0"] = parse_float_series(df["0"]).fillna(0.0)
+    df["gesamt"] = parse_float_series(df["Gesamt"]).fillna(0.0)
 
-    df = df[["Jahr", "KW", "tDM Customer ohne SC", "volume_0"]].copy()
+    df = df[["Jahr", "KW", "tDM Customer ohne SC", "volume_0", "gesamt"]].copy()
 
     current_year, current_kw = df.loc[df["Jahr"].idxmax(), "Jahr"], None
     latest_years = df[df["Jahr"] == current_year]
@@ -214,14 +229,27 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
             continue
 
         current_value = float(group.loc[current_mask, "volume_0"].iloc[0])
+        current_total = float(group.loc[current_mask, "gesamt"].iloc[0])
         prev_value = float(group.loc[(group["Jahr"] == prev_year_1) & (group["KW"] == prev_kw_1), "volume_0"].iloc[0]) if ((group["Jahr"] == prev_year_1) & (group["KW"] == prev_kw_1)).any() else np.nan
+        prev_total = float(group.loc[(group["Jahr"] == prev_year_1) & (group["KW"] == prev_kw_1), "gesamt"].iloc[0]) if ((group["Jahr"] == prev_year_1) & (group["KW"] == prev_kw_1)).any() else np.nan
         prev_prev_value = float(group.loc[(group["Jahr"] == prev_year_2) & (group["KW"] == prev_kw_2), "volume_0"].iloc[0]) if ((group["Jahr"] == prev_year_2) & (group["KW"] == prev_kw_2)).any() else np.nan
+        prev_prev_total = float(group.loc[(group["Jahr"] == prev_year_2) & (group["KW"] == prev_kw_2), "gesamt"].iloc[0]) if ((group["Jahr"] == prev_year_2) & (group["KW"] == prev_kw_2)).any() else np.nan
 
         current_index = group.index[current_mask][0]
         prior_rows = group.loc[:current_index - 1, "volume_0"] if current_index > 0 else pd.Series(dtype=float)
+        prior_totals = group.loc[:current_index - 1, "gesamt"] if current_index > 0 else pd.Series(dtype=float)
 
         avg_4 = prior_rows.tail(4).mean() if len(prior_rows) > 0 else np.nan
         avg_8 = prior_rows.tail(8).mean() if len(prior_rows) > 0 else np.nan
+
+        avg_4_total = prior_totals.tail(4).mean() if len(prior_totals) > 0 else np.nan
+        avg_8_total = prior_totals.tail(8).mean() if len(prior_totals) > 0 else np.nan
+
+        gap_current = safe_gap_percent(current_total, current_value)
+        gap_prev = safe_gap_percent(prev_total, prev_value)
+        gap_prev_prev = safe_gap_percent(prev_prev_total, prev_prev_value)
+        gap_avg4 = safe_gap_percent(avg_4_total, avg_4)
+        gap_avg8 = safe_gap_percent(avg_8_total, avg_8)
 
         diff_prev = safe_pct_change(current_value, prev_value)
         diff_avg4 = safe_pct_change(current_value, avg_4)
@@ -236,10 +264,20 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
                 "Jahr": current_year,
                 "KW": current_kw,
                 "Aktuelle Woche (0)": current_value,
+                "Aktuelle Woche (Gesamt)": current_total,
+                "Gap Gesamt vs 0 (%)": gap_current,
                 "Vorwoche": prev_value,
+                "Vorwoche Gesamt": prev_total,
+                "Gap Vorwoche (%)": gap_prev,
                 "Vor-Vorwoche": prev_prev_value,
+                "Vor-Vorwoche Gesamt": prev_prev_total,
+                "Gap Vor-Vorwoche (%)": gap_prev_prev,
                 "Durchschnitt 4 Wochen": avg_4,
+                "Durchschnitt 4 Wochen Gesamt": avg_4_total,
+                "Gap Ø 4 Wochen (%)": gap_avg4,
                 "Durchschnitt 8 Wochen": avg_8,
+                "Durchschnitt 8 Wochen Gesamt": avg_8_total,
+                "Gap Ø 8 Wochen (%)": gap_avg8,
                 "% Veränderung vs Vorwoche": diff_prev,
                 "% Veränderung vs Ø 4 Wochen": diff_avg4,
                 "% Veränderung vs Ø 8 Wochen": diff_avg8,
@@ -347,10 +385,20 @@ def main() -> None:
         .format(
             {
                 "Aktuelle Woche (0)": fmt_thousands_point,
+                "Aktuelle Woche (Gesamt)": fmt_thousands_point,
+                "Gap Gesamt vs 0 (%)": fmt_percent_no_decimal,
                 "Vorwoche": fmt_thousands_point,
+                "Vorwoche Gesamt": fmt_thousands_point,
+                "Gap Vorwoche (%)": fmt_percent_no_decimal,
                 "Vor-Vorwoche": fmt_thousands_point,
+                "Vor-Vorwoche Gesamt": fmt_thousands_point,
+                "Gap Vor-Vorwoche (%)": fmt_percent_no_decimal,
                 "Durchschnitt 4 Wochen": fmt_thousands_point,
+                "Durchschnitt 4 Wochen Gesamt": fmt_thousands_point,
+                "Gap Ø 4 Wochen (%)": fmt_percent_no_decimal,
                 "Durchschnitt 8 Wochen": fmt_thousands_point,
+                "Durchschnitt 8 Wochen Gesamt": fmt_thousands_point,
+                "Gap Ø 8 Wochen (%)": fmt_percent_no_decimal,
                 "% Veränderung vs Vorwoche": fmt_percent_no_decimal,
                 "% Veränderung vs Ø 4 Wochen": fmt_percent_no_decimal,
                 "% Veränderung vs Ø 8 Wochen": fmt_percent_no_decimal,
@@ -387,35 +435,82 @@ def main() -> None:
     raw = normalize_year_column(raw)
     raw = map_column_aliases(raw)
     # Ensure necessary columns and parse types
-    if not {"Jahr", "KW", "tDM Customer ohne SC", "0"}.issubset(set(raw.columns)):
+    if not {"Jahr", "KW", "tDM Customer ohne SC", "0", "Gesamt"}.issubset(set(raw.columns)):
         st.error("Rohdaten enthalten nicht die benötigten Spalten für das Diagramm.")
     else:
         raw["Jahr"] = parse_int_series(raw["Jahr"]).astype(int)
         raw["KW"] = parse_int_series(raw["KW"]).astype(int)
         raw["tDM Customer ohne SC"] = raw["tDM Customer ohne SC"].astype(str).str.strip()
         raw["volume_0"] = parse_float_series(raw["0"]).fillna(np.nan)
+        raw["gesamt"] = parse_float_series(raw["Gesamt"]).fillna(np.nan)
+        raw["gap_percent"] = raw.apply(lambda row: safe_gap_percent(row["gesamt"], row["volume_0"]), axis=1)
 
         df_cust = raw[raw["tDM Customer ohne SC"] == selected].copy()
         if df_cust.empty:
             st.info("Für den ausgewählten Kunden sind keine historischen Daten vorhanden.")
         else:
-            agg = df_cust.groupby(["Jahr", "KW"], as_index=False)["volume_0"].sum()
+            agg = df_cust.groupby(["Jahr", "KW"], as_index=False).agg(
+                volume_0=("volume_0", "sum"),
+                gesamt=("gesamt", "sum"),
+                gap_percent=("gap_percent", "mean"),
+            )
             years = sorted(agg["Jahr"].unique())
             # Build full grid of Year x KW (1..53) to show gaps
             full = pd.MultiIndex.from_product([years, list(range(1, 54))], names=["Jahr", "KW"]).to_frame(index=False)
             full = full.merge(agg, on=["Jahr", "KW"], how="left")
 
-            # Plot: one line per year, KW on x-axis
-            fig = px.line(
-                full,
-                x="KW",
-                y="volume_0",
-                color="Jahr",
-                labels={"KW": "Kalenderwoche (KW)", "volume_0": "Mailvolumen (Spalte 0)", "Jahr": "Jahr"},
-                markers=False,
+            # Plot: volume lines for Gesamt and 0, plus gap percentage on secondary axis
+            fig = go.Figure()
+            for year in years:
+                year_data = full[full["Jahr"] == year]
+                fig.add_trace(
+                    go.Scatter(
+                        x=year_data["KW"],
+                        y=year_data["gesamt"],
+                        mode="lines",
+                        name=f"Gesamt {year}",
+                        line=dict(dash="dash"),
+                        hovertemplate="Jahr=%{text}<br>KW=%{x}<br>Gesamt=%{y:.0f}<extra></extra>",
+                        text=[year] * len(year_data),
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=year_data["KW"],
+                        y=year_data["volume_0"],
+                        mode="lines",
+                        name=f"0 {year}",
+                        hovertemplate="Jahr=%{text}<br>KW=%{x}<br>0=%{y:.0f}<extra></extra>",
+                        text=[year] * len(year_data),
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=year_data["KW"],
+                        y=year_data["gap_percent"],
+                        mode="lines",
+                        name=f"Gap % {year}",
+                        line=dict(dash="dot"),
+                        yaxis="y2",
+                        hovertemplate="Jahr=%{text}<br>KW=%{x}<br>Gap=%{y:.1f}%<extra></extra>",
+                        text=[year] * len(year_data),
+                    )
+                )
+
+            fig.update_layout(
+                xaxis_title="Kalenderwoche (KW)",
+                yaxis_title="Mailvolumen",
+                yaxis2=dict(
+                    title="Gap % Gesamt vs 0",
+                    overlaying="y",
+                    side="right",
+                    rangemode="tozero",
+                ),
+                hovermode="x unified",
+                legend_title_text="Metrik",
             )
+            fig.update_xaxes(tickmode="linear", dtick=1)
             fig.update_traces(connectgaps=False)
-            fig.update_layout(hovermode="x unified", legend_title_text="Jahr")
             st.plotly_chart(fig, use_container_width=True)
 
     # Export: CSV (German format) and Excel
