@@ -379,8 +379,20 @@ def main() -> None:
         fmt_percent_no_decimal(average_drop) if pd.notna(average_drop) else "N/A",
     )
 
+    display_columns = [
+        "tDM Customer ohne SC",
+        "Aktuelle Woche (0)",
+        "Aktuelle Woche (Gesamt)",
+        "Gap Gesamt vs 0 (%)",
+        "Vorwoche",
+        "Vorwoche Gesamt",
+        "% Veränderung vs Vorwoche",
+        "Durchschnitt 4 Wochen",
+    ]
+    display_df = result_df[display_columns].copy()
+
     styled = (
-        result_df.style
+        display_df.style
         .apply(lambda row: style_drop(row, threshold), axis=1)
         .format(
             {
@@ -389,20 +401,8 @@ def main() -> None:
                 "Gap Gesamt vs 0 (%)": fmt_percent_no_decimal,
                 "Vorwoche": fmt_thousands_point,
                 "Vorwoche Gesamt": fmt_thousands_point,
-                "Gap Vorwoche (%)": fmt_percent_no_decimal,
-                "Vor-Vorwoche": fmt_thousands_point,
-                "Vor-Vorwoche Gesamt": fmt_thousands_point,
-                "Gap Vor-Vorwoche (%)": fmt_percent_no_decimal,
-                "Durchschnitt 4 Wochen": fmt_thousands_point,
-                "Durchschnitt 4 Wochen Gesamt": fmt_thousands_point,
-                "Gap Ø 4 Wochen (%)": fmt_percent_no_decimal,
-                "Durchschnitt 8 Wochen": fmt_thousands_point,
-                "Durchschnitt 8 Wochen Gesamt": fmt_thousands_point,
-                "Gap Ø 8 Wochen (%)": fmt_percent_no_decimal,
                 "% Veränderung vs Vorwoche": fmt_percent_no_decimal,
-                "% Veränderung vs Ø 4 Wochen": fmt_percent_no_decimal,
-                "% Veränderung vs Ø 8 Wochen": fmt_percent_no_decimal,
-                "% Veränderung (Hauptvergleich)": fmt_percent_no_decimal,
+                "Durchschnitt 4 Wochen": fmt_thousands_point,
             },
             na_rep="N/A",
         )
@@ -459,7 +459,7 @@ def main() -> None:
             full = pd.MultiIndex.from_product([years, list(range(1, 54))], names=["Jahr", "KW"]).to_frame(index=False)
             full = full.merge(agg, on=["Jahr", "KW"], how="left")
 
-            # Plot: volume lines for Gesamt and 0, plus gap percentage on secondary axis
+            # Plot: only absolute volume lines for Gesamt and 0
             fig = go.Figure()
             for year in years:
                 year_data = full[full["Jahr"] == year]
@@ -484,28 +484,10 @@ def main() -> None:
                         text=[year] * len(year_data),
                     )
                 )
-                fig.add_trace(
-                    go.Scatter(
-                        x=year_data["KW"],
-                        y=year_data["gap_percent"],
-                        mode="lines",
-                        name=f"Gap % {year}",
-                        line=dict(dash="dot"),
-                        yaxis="y2",
-                        hovertemplate="Jahr=%{text}<br>KW=%{x}<br>Gap=%{y:.1f}%<extra></extra>",
-                        text=[year] * len(year_data),
-                    )
-                )
 
             fig.update_layout(
                 xaxis_title="Kalenderwoche (KW)",
                 yaxis_title="Mailvolumen",
-                yaxis2=dict(
-                    title="Gap % Gesamt vs 0",
-                    overlaying="y",
-                    side="right",
-                    rangemode="tozero",
-                ),
                 hovermode="x unified",
                 legend_title_text="Metrik",
             )
