@@ -1,4 +1,5 @@
 import datetime
+from collections import Counter
 from typing import Optional
 import io
 
@@ -54,6 +55,48 @@ def normalize_year_column(df: pd.DataFrame) -> pd.DataFrame:
     if "Jahr von Date" in df.columns and "Jahr" not in df.columns:
         df = df.rename(columns={"Jahr von Date": "Jahr"})
     return df
+
+
+def year_week_to_date(year: int, week: int) -> datetime.date:
+    """Convert ISO year/week to a date at the start of that week."""
+    try:
+        return datetime.date.fromisocalendar(year, week, 1)
+    except ValueError:
+        # Handle invalid ISO weeks gracefully by falling back to year-end week.
+        fallback_week = 52
+        return datetime.date.fromisocalendar(year, fallback_week, 1)
+
+
+def detect_sending_pattern(group: pd.DataFrame) -> tuple[bool, str]:
+    """Detect a repeating sending pattern for a customer based on weekly shipment dates."""
+    active_weeks = (
+        group.loc[group["volume_0"] > 0, ["Jahr", "KW"]]
+        .drop_duplicates()
+        .sort_values(["Jahr", "KW"])
+    )
+    if len(active_weeks) < 4:
+        return False, "keine"
+
+    week_dates = [year_week_to_date(int(row["Jahr"]), int(row["KW"])) for _, row in active_weeks.iterrows()]
+    intervals = np.diff([d.toordinal() for d in week_dates]) // 7
+    if len(intervals) == 0:
+        return False, "keine"
+
+    interval_counts = Counter(intervals)
+    mode_interval, mode_count = interval_counts.most_common(1)[0]
+    stable_ratio = sum(1 for value in intervals if abs(value - mode_interval) <= 1) / len(intervals)
+
+    if mode_count / len(intervals) < 0.66 or stable_ratio < 0.7 or mode_interval > 12:
+        return False, "keine"
+
+    pattern_types = {
+        1: "wöchentlich",
+        2: "zweiwöchentlich",
+        3: "dreiewöchentlich",
+        4: "monatlich (4 Wochen)",
+        5: "monatlich (5 Wochen)",
+    }
+    return True, pattern_types.get(mode_interval, f"zyklisch alle {mode_interval} Wochen")
 
 
 def map_column_aliases(df: pd.DataFrame) -> pd.DataFrame:
@@ -258,6 +301,13 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
         comparison_value = avg_4 if not np.isnan(avg_4) else prev_value if not np.isnan(prev_value) else avg_8
         comparison_diff = safe_pct_change(current_value, comparison_value)
 
+        pattern_recognized, pattern_type = detect_sending_pattern(group)
+        classification = (
+            "Musterbedingter Rückgang"
+            if pattern_recognized and pd.notna(comparison_diff) and abs(comparison_diff) < 10
+            else "Auffälligkeit"
+        )
+
         results.append(
             {
                 "tDM Customer ohne SC": customer,
@@ -282,6 +332,9 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
                 "% Veränderung vs Ø 4 Wochen": diff_avg4,
                 "% Veränderung vs Ø 8 Wochen": diff_avg8,
                 "% Veränderung (Hauptvergleich)": comparison_diff,
+                "Muster erkannt": "Ja" if pattern_recognized else "Nein",
+                "Versandmuster": pattern_type,
+                "Klassifikation": classification,
             }
         )
 
@@ -289,35 +342,34 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
     if result_df.empty:
         return result_df
 
+    include_candidates = (
+        (result_df["Aktuelle Woche (0)"] >= float(min_volume))
+        | (result_df["Aktuelle Woche (0)"] == 0)
+    )
+
     if use_threshold:
         filtered = result_df[
-            (
-                (result_df["Aktuelle Woche (0)"] == 0)
-                | (
-                    (result_df["Aktuelle Woche (0)"] >= float(min_volume))
-                    & (result_df["% Veränderung (Hauptvergleich)"] < float(threshold))
-                )
+            include_candidates
+            & (
+                (result_df["Muster erkannt"] == "Ja")
+                | (result_df["% Veränderung (Hauptvergleich)"] < float(threshold))
             )
         ].copy()
     else:
-        filtered = result_df[result_df["Aktuelle Woche (0)"] >= float(min_volume)].copy()
+        filtered = result_df[include_candidates].copy()
 
-    filtered = filtered.sort_values("% Veränderung (Hauptvergleich)", ascending=True).reset_index(drop=True)
+    filtered = filtered.sort_values(["Klassifikation", "% Veränderung (Hauptvergleich)"], ascending=[True, True]).reset_index(drop=True)
     return filtered
 
 
-def style_drop(row: pd.Series, threshold: float) -> list[str]:
-    styles = []
-    for col in row.index:
-        if col in ["% Veränderung vs Vorwoche", "% Veränderung vs Ø 4 Wochen", "% Veränderung vs Ø 8 Wochen", "% Veränderung (Hauptvergleich)"]:
-            value = row[col]
-            if pd.notna(value) and value < threshold:
-                styles.append("background-color: #ffc6c6")
-            else:
-                styles.append("")
-        else:
-            styles.append("")
-    return styles
+def style_drop(row: pd.Series) -> list[str]:
+    classification = row.get("Klassifikation", "")
+    color = ""
+    if classification == "Auffälligkeit":
+        color = "#ffc6c6"
+    elif classification == "Musterbedingter Rückgang":
+        color = "#fff4c2"
+    return [color] * len(row)
 
 
 def main() -> None:
@@ -389,11 +441,15 @@ def main() -> None:
 
     display_columns = [
         "tDM Customer ohne SC",
+        "Klassifikation",
+        "Muster erkannt",
+        "Versandmuster",
         "Aktuelle Woche (0)",
         "Aktuelle Woche (Gesamt)",
         "Gap Gesamt vs 0 (%)",
         "Vorwoche",
         "Vorwoche Gesamt",
+        "% Veränderung (Hauptvergleich)",
         "% Veränderung vs Vorwoche",
         "Durchschnitt 4 Wochen",
     ]
@@ -401,7 +457,7 @@ def main() -> None:
 
     styled = (
         display_df.style
-        .apply(lambda row: style_drop(row, threshold), axis=1)
+        .apply(style_drop, axis=1)
         .format(
             {
                 "Aktuelle Woche (0)": fmt_thousands_point,
@@ -409,6 +465,7 @@ def main() -> None:
                 "Gap Gesamt vs 0 (%)": fmt_percent_no_decimal,
                 "Vorwoche": fmt_thousands_point,
                 "Vorwoche Gesamt": fmt_thousands_point,
+                "% Veränderung (Hauptvergleich)": fmt_percent_no_decimal,
                 "% Veränderung vs Vorwoche": fmt_percent_no_decimal,
                 "Durchschnitt 4 Wochen": fmt_thousands_point,
             },
