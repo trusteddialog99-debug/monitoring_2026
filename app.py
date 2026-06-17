@@ -194,7 +194,7 @@ def fmt_percent_no_decimal(x) -> str:
         return str(x)
 
 
-def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float) -> pd.DataFrame:
+def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float, use_threshold: bool = True) -> pd.DataFrame:
     df = normalize_columns(df)
     df = normalize_year_column(df)
     df = map_column_aliases(df)
@@ -289,15 +289,18 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
     if result_df.empty:
         return result_df
 
-    filtered = result_df[
-        (
-            (result_df["Aktuelle Woche (0)"] == 0)
-            | (
-                (result_df["Aktuelle Woche (0)"] >= float(min_volume))
-                & (result_df["% Veränderung (Hauptvergleich)"] < float(threshold))
+    if use_threshold:
+        filtered = result_df[
+            (
+                (result_df["Aktuelle Woche (0)"] == 0)
+                | (
+                    (result_df["Aktuelle Woche (0)"] >= float(min_volume))
+                    & (result_df["% Veränderung (Hauptvergleich)"] < float(threshold))
+                )
             )
-        )
-    ].copy()
+        ].copy()
+    else:
+        filtered = result_df[result_df["Aktuelle Woche (0)"] >= float(min_volume)].copy()
 
     filtered = filtered.sort_values("% Veränderung (Hauptvergleich)", ascending=True).reset_index(drop=True)
     return filtered
@@ -342,7 +345,12 @@ def main() -> None:
             value=100,
             min_value=0,
             step=1,
-            help="Zeige nur Kunden mit mindestens diesem aktuellen trustedDialog-Volumen oder solchen mit 0.",
+            help="Zeige nur Kunden mit mindestens diesem aktuellen trustedDialog-Volumen.",
+        )
+        show_all_customers = st.checkbox(
+            "Alle Kunden anzeigen (ohne Abweichungsschwelle)",
+            value=False,
+            help="Wenn aktiviert, wird die Abweichungsschwelle nicht angewendet und es werden alle Kunden mit dem Mindestvolumen angezeigt.",
         )
         st.markdown(
             "Lade eine Excel- oder CSV-Datei hoch, die die Spalten `Jahr`, `KW`, `tDM Customer ohne SC` und `0` enthält."
@@ -360,7 +368,7 @@ def main() -> None:
         return
 
     try:
-        result_df = build_monitoring_table(data, threshold, min_volume)
+        result_df = build_monitoring_table(data, threshold, min_volume, use_threshold=not show_all_customers)
     except Exception as exc:
         st.error(f"Fehler bei der Datenverarbeitung: {exc}")
         return
