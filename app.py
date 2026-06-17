@@ -77,7 +77,20 @@ def detect_sending_pattern(group: pd.DataFrame) -> tuple[bool, str]:
     if len(active_weeks) < 4:
         return False, "keine"
 
-    week_dates = [year_week_to_date(int(row["Jahr"]), int(row["KW"])) for _, row in active_weeks.iterrows()]
+    active_weeks = active_weeks.dropna(subset=["Jahr", "KW"])
+    active_weeks = active_weeks[(active_weeks["KW"] >= 1) & (active_weeks["KW"] <= 53)]
+    if active_weeks.empty:
+        return False, "keine"
+
+    week_dates = []
+    for _, row in active_weeks.iterrows():
+        try:
+            week_dates.append(year_week_to_date(int(row["Jahr"]), int(row["KW"])))
+        except Exception:
+            continue
+    if len(week_dates) < 2:
+        return False, "keine"
+
     intervals = np.diff([d.toordinal() for d in week_dates]) // 7
     if len(intervals) == 0:
         return False, "keine"
@@ -244,13 +257,17 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
     required_columns = ["Jahr", "KW", "tDM Customer ohne SC", "0", "Gesamt"]
     validate_required_columns(df, required_columns)
 
-    df["Jahr"] = parse_int_series(df["Jahr"]).astype(int)
-    df["KW"] = parse_int_series(df["KW"]).astype(int)
+    df["Jahr"] = parse_int_series(df["Jahr"])
+    df["KW"] = parse_int_series(df["KW"])
     df["tDM Customer ohne SC"] = df["tDM Customer ohne SC"].astype(str).str.strip()
     df["volume_0"] = parse_float_series(df["0"]).fillna(0.0)
     df["gesamt"] = parse_float_series(df["Gesamt"]).fillna(0.0)
 
     df = df[["Jahr", "KW", "tDM Customer ohne SC", "volume_0", "gesamt"]].copy()
+    df = df.dropna(subset=["Jahr", "KW"])
+    df = df[(df["KW"] >= 1) & (df["KW"] <= 53)]
+    if df.empty:
+        raise ValueError("Es sind keine gültigen Zeilen mit Jahr/KW vorhanden.")
 
     current_year, current_kw = df.loc[df["Jahr"].idxmax(), "Jahr"], None
     latest_years = df[df["Jahr"] == current_year]
@@ -503,11 +520,13 @@ def main() -> None:
     if not {"Jahr", "KW", "tDM Customer ohne SC", "0", "Gesamt"}.issubset(set(raw.columns)):
         st.error("Rohdaten enthalten nicht die benötigten Spalten für das Diagramm.")
     else:
-        raw["Jahr"] = parse_int_series(raw["Jahr"]).astype(int)
-        raw["KW"] = parse_int_series(raw["KW"]).astype(int)
+        raw["Jahr"] = parse_int_series(raw["Jahr"])
+        raw["KW"] = parse_int_series(raw["KW"])
         raw["tDM Customer ohne SC"] = raw["tDM Customer ohne SC"].astype(str).str.strip()
         raw["volume_0"] = parse_float_series(raw["0"]).fillna(np.nan)
         raw["gesamt"] = parse_float_series(raw["Gesamt"]).fillna(np.nan)
+        raw = raw.dropna(subset=["Jahr", "KW"])
+        raw = raw[(raw["KW"] >= 1) & (raw["KW"] <= 53)]
         raw["gap_percent"] = raw.apply(lambda row: safe_gap_percent(row["gesamt"], row["volume_0"]), axis=1)
 
         df_cust = raw[raw["tDM Customer ohne SC"] == selected].copy()
