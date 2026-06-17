@@ -381,12 +381,13 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
 
 def style_drop(row: pd.Series) -> list[str]:
     classification = row.get("Klassifikation", "")
-    color = ""
     if classification == "Auffälligkeit":
-        color = "#ffc6c6"
+        style = "background-color: #ffc6c6"
     elif classification == "Musterbedingter Rückgang":
-        color = "#fff4c2"
-    return [color] * len(row)
+        style = "background-color: #fff4c2"
+    else:
+        style = ""
+    return [style] * len(row)
 
 
 def main() -> None:
