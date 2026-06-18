@@ -258,6 +258,46 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
         comparison_value = avg_4 if not np.isnan(avg_4) else prev_value if not np.isnan(prev_value) else avg_8
         comparison_diff = safe_pct_change(current_value, comparison_value)
 
+        historical_mean = avg_8 if not np.isnan(avg_8) else avg_4 if not np.isnan(avg_4) else np.nan
+        recent_history = prior_rows.dropna().tail(8)
+        sustained_history = len(recent_history) >= 4 and not np.isnan(historical_mean) and historical_mean > 0
+        low_threshold = max(float(min_volume), historical_mean * 0.4 if not np.isnan(historical_mean) else float(min_volume))
+        dropped_to_low_volume = (
+            current_value > 0
+            and sustained_history
+            and current_value <= low_threshold
+            and current_value < float(min_volume)
+        )
+
+        # Calculate weeks with activity and inactivity duration
+        all_volume = group["volume_0"].values
+        weeks_with_activity = int(np.sum(all_volume > 0))
+        
+        # Count consecutive weeks with zero volume from the end
+        weeks_inactive = 0
+        for val in reversed(all_volume):
+            if val == 0:
+                weeks_inactive += 1
+            else:
+                break
+        
+        # Status determination with new categories
+        if current_value == 0 and sustained_history:
+            # Check if this is a long-term inactivity for a previously active sender
+            if weeks_with_activity >= 12:  # Was active for at least 12 weeks
+                if weeks_inactive >= 4:  # Inactive for at least 4 weeks
+                    status = "Inaktiv (lange Pause)"
+                else:
+                    status = "Kein Versand"
+            else:
+                status = "Kein Versand"
+        elif dropped_to_low_volume:
+            status = "Stark reduziert"
+        elif current_value >= float(min_volume) and comparison_diff < float(threshold):
+            status = "Rückgang"
+        else:
+            status = ""
+
         results.append(
             {
                 "tDM Customer ohne SC": customer,
@@ -282,6 +322,10 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
                 "% Veränderung vs Ø 4 Wochen": diff_avg4,
                 "% Veränderung vs Ø 8 Wochen": diff_avg8,
                 "% Veränderung (Hauptvergleich)": comparison_diff,
+                "Stark reduziert": dropped_to_low_volume,
+                "Status": status,
+                "Wochen aktiv": weeks_with_activity,
+                "Wochen inaktiv": weeks_inactive,
             }
         )
 
@@ -293,6 +337,7 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
         filtered = result_df[
             (
                 (result_df["Aktuelle Woche (0)"] == 0)
+                | result_df["Stark reduziert"]
                 | (
                     (result_df["Aktuelle Woche (0)"] >= float(min_volume))
                     & (result_df["% Veränderung (Hauptvergleich)"] < float(threshold))
@@ -300,7 +345,11 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
             )
         ].copy()
     else:
-        filtered = result_df[result_df["Aktuelle Woche (0)"] >= float(min_volume)].copy()
+        filtered = result_df[
+            (result_df["Aktuelle Woche (0)"] == 0)
+            | (result_df["Aktuelle Woche (0)"] >= float(min_volume))
+            | result_df["Stark reduziert"]
+        ].copy()
 
     filtered = filtered.sort_values("% Veränderung (Hauptvergleich)", ascending=True).reset_index(drop=True)
     return filtered
@@ -309,7 +358,9 @@ def build_monitoring_table(df: pd.DataFrame, threshold: float, min_volume: float
 def style_drop(row: pd.Series, threshold: float) -> list[str]:
     styles = []
     for col in row.index:
-        if col in ["% Veränderung vs Vorwoche", "% Veränderung vs Ø 4 Wochen", "% Veränderung vs Ø 8 Wochen", "% Veränderung (Hauptvergleich)"]:
+        if col == "Status":
+            styles.append("background-color: #ffc6c6" if row[col] in {"Kein Versand", "Stark reduziert", "Rückgang", "Inaktiv (lange Pause)"} else "")
+        elif col in ["% Veränderung vs Vorwoche", "% Veränderung vs Ø 4 Wochen", "% Veränderung vs Ø 8 Wochen", "% Veränderung (Hauptvergleich)"]:
             value = row[col]
             if pd.notna(value) and value < threshold:
                 styles.append("background-color: #ffc6c6")
@@ -350,7 +401,7 @@ def main() -> None:
         show_all_customers = st.checkbox(
             "Alle Kunden anzeigen (ohne Abweichungsschwelle)",
             value=False,
-            help="Wenn aktiviert, wird die Abweichungsschwelle nicht angewendet und es werden alle Kunden mit dem Mindestvolumen angezeigt.",
+            help="Wenn aktiviert, wird die Abweichungsschwelle nicht angewendet und es werden alle Kunden mit dem Mindestvolumen sowie stark reduzierte Einsendungen angezeigt.",
         )
         st.markdown(
             "Lade eine Excel- oder CSV-Datei hoch, die die Spalten `Jahr`, `KW`, `tDM Customer ohne SC` und `0` enthält."
@@ -391,6 +442,9 @@ def main() -> None:
         "tDM Customer ohne SC",
         "Aktuelle Woche (0)",
         "Aktuelle Woche (Gesamt)",
+        "Status",
+        "Wochen aktiv",
+        "Wochen inaktiv",
         "Gap Gesamt vs 0 (%)",
         "Vorwoche",
         "Vorwoche Gesamt",
@@ -406,6 +460,9 @@ def main() -> None:
             {
                 "Aktuelle Woche (0)": fmt_thousands_point,
                 "Aktuelle Woche (Gesamt)": fmt_thousands_point,
+                "Status": str,
+                "Wochen aktiv": lambda x: f"{int(x)}" if pd.notna(x) else "N/A",
+                "Wochen inaktiv": lambda x: f"{int(x)}" if pd.notna(x) else "N/A",
                 "Gap Gesamt vs 0 (%)": fmt_percent_no_decimal,
                 "Vorwoche": fmt_thousands_point,
                 "Vorwoche Gesamt": fmt_thousands_point,
@@ -531,7 +588,11 @@ def main() -> None:
         """
         **Hinweise:**
         - Es wird ausschließlich die Spalte `0` analysiert.
-        - Kunden mit aktuellem Volumen `0` werden immer gezeigt.
+        - **Kein Versand**: Versender mit Versand-Historie, die aktuell 0 E-Mails versenden.
+        - **Inaktiv (lange Pause)**: Versender, die über mindestens 12 Wochen aktiv waren und jetzt mindestens 4 Wochen lang nichts mehr versenden.
+        - **Stark reduziert**: Versender mit historischer Aktivität, deren Versand um 60% oder mehr gefallen ist.
+        - **Rückgang**: Versender mit Mindestvolumen, deren Versand unter die Abweichungsschwelle fällt.
+        - Die Spalten "Wochen aktiv" und "Wochen inaktiv" zeigen die historische Versand-Aktivität.
         - Fehlende Vorwochen werden als `NaN` angezeigt.
         - Der Hauptvergleich basiert auf dem Durchschnitt der letzten 4 Wochen, falls vorhanden.
         """
