@@ -419,22 +419,31 @@ def main() -> None:
     st.dataframe(styled, use_container_width=True)
 
     # Selection: search box + filtered customer picker
+    # Wichtig: Das Selectbox-Widget bekommt einen festen key. Dadurch übernimmt
+    # Streamlit die Auswahl direkt in st.session_state und es entsteht kein
+    # "1-Klick-Verzug" mehr zwischen Dropdown-Auswahl und angezeigtem Kunden.
     customers = result_df["tDM Customer ohne SC"].tolist()
-    if "selected_customer" not in st.session_state:
-        st.session_state.selected_customer = customers[0] if customers else None
-
-    search_term = st.text_input("Kunde suchen", value="", help="Teil des Kundennamens eingeben, um die Auswahl einzuschränken.")
+    search_term = st.text_input(
+        "Kunde suchen",
+        value="",
+        help="Teil des Kundennamens eingeben, um die Auswahl einzuschränken.",
+    )
     filtered_customers = [c for c in customers if search_term.lower() in c.lower()] if search_term else customers
     if not filtered_customers:
         st.warning("Kein Kunde passt zur Suche. Bitte Suchbegriff anpassen.")
         filtered_customers = customers
 
-    default_index = 0
-    if st.session_state.selected_customer in filtered_customers:
-        default_index = filtered_customers.index(st.session_state.selected_customer)
+    # Session-State vor dem Rendern des Widgets validieren.
+    # Falls Filter/Einstellungen den bisherigen Kunden entfernen, sauber auf den
+    # ersten verfügbaren Kunden setzen.
+    if "selected_customer" not in st.session_state or st.session_state.selected_customer not in filtered_customers:
+        st.session_state.selected_customer = filtered_customers[0] if filtered_customers else None
 
-    selected = st.selectbox("Kunde auswählen für Historie", filtered_customers, index=default_index)
-    st.session_state.selected_customer = selected
+    selected = st.selectbox(
+        "Kunde auswählen für Historie",
+        filtered_customers,
+        key="selected_customer",
+    )
 
     st.subheader(f"Historisches Mailvolumen für: {selected}")
 
